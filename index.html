@@ -283,7 +283,7 @@ tr:hover td{background:rgba(79,142,247,.025)}
 </div>
 
 <!-- TRADER PAGE -->
-<div class="page active" id="page-trader">
+<div class="page" id="page-trader">
   <div class="srow" style="margin-top:13px">
     <div class="sbox">
       <div class="si">⟡</div>
@@ -317,7 +317,7 @@ tr:hover td{background:rgba(79,142,247,.025)}
 </div>
 
 <!-- MARKETS PAGE -->
-<div class="page" id="page-markets">
+<div class="page active" id="page-markets">
   <div style="display:flex;align-items:center;justify-content:space-between;margin:13px 0 10px">
     <div>
       <div style="font-size:16px;font-weight:800;margin-bottom:1px">📊 Markets</div>
@@ -468,8 +468,8 @@ tr:hover td{background:rgba(79,142,247,.025)}
 
 <!-- BOTTOM NAV -->
 <nav class="bnav">
-  <button class="bt on"  id="bn-trader">    <span class="ni">👤</span><span>Trader</span></button>
-  <button class="bt"     id="bn-markets">   <span class="ni">📊</span><span>Markets</span></button>
+  <button class="bt"  id="bn-trader">    <span class="ni">👤</span><span>Trader</span></button>
+  <button class="bt on"     id="bn-markets">   <span class="ni">📊</span><span>Markets</span></button>
   <button class="bt"     id="bn-scalping">  <span class="ni">⚡</span><span>Scalp</span></button>
   <button class="bt"     id="bn-lp">        <span class="ni">💰</span><span>LP</span></button>
   <button class="bt"     id="bn-leaderboard"><span class="ni">🏆</span><span>Leaders</span></button>
@@ -481,6 +481,7 @@ var GAMMA  = 'https://gamma-api.polymarket.com';
 var DATA   = 'https://data-api.polymarket.com';
 var DATAv1 = 'https://data-api.polymarket.com/v1';
 var CLOB   = 'https://clob.polymarket.com';
+var _eventsCache=null,_eventsCacheTs=0,_obCache={},_currentEventForModal=null;
 /* CORS proxies as fallback */
 var PROXY  = 'https://api.allorigins.win/raw?url=';
 var PROXY2 = 'https://corsproxy.io/?';
@@ -603,12 +604,14 @@ function renderSearch(q){
 function gsClick(idx){
   var ev=_gsItems[idx]; if(!ev)return;
   closeSearch();
+  goPage('markets');
   _evData.unshift(ev);
   openMktModal(0);
 }
 
 /* ═════ EVENTS LOADER ═════ */
-function fetchEvents(cb){
+function fetchEvents(cb,force){
+  if(!force&&_eventsCache&&(Date.now()-_eventsCacheTs)<45000){ if(cb)cb(_eventsCache,null); return; }
   /* Try multiple endpoint variants — volume_24hr is not always a valid sort param */
   var urls=[
     GAMMA+'/events?active=true&closed=false&limit=100&order=volume&ascending=false',
@@ -621,7 +624,7 @@ function fetchEvents(cb){
     fj(urls[i])
       .then(function(d){
         var list=Array.isArray(d)?d:(d.events||d.data||[]);
-        if(list.length>0){ _allEvents=list; if(cb)cb(list,null); return; }
+        if(list.length>0){ _allEvents=list; _eventsCache=list; _eventsCacheTs=Date.now(); if(cb)cb(list,null); return; }
         tryUrl(i+1);
       })
       .catch(function(){ tryUrl(i+1); });
@@ -806,7 +809,7 @@ function openActMkt(idx){
 }
 
 /* ═════ MARKETS ═════ */
-function loadMkts(filter){
+function loadMkts(filter,force){
   _mktsLoaded=true; hide('mErr'); show('mLd'); ge('mList').innerHTML='';
   setTxt('mLdTxt','Fetching top markets…');
   var sortParam=(filter==='new')?'createdAt':(filter==='volume'?'volume':'volume_24hr');
@@ -826,7 +829,7 @@ function loadMkts(filter){
     }
     setTxt('mLastUpdate','Updated '+new Date().toLocaleTimeString());
     renderMkts(filtered.slice(0,30));
-  });
+  },force);
 }
 function renderMkts(events){
   _evData=events;
@@ -868,10 +871,34 @@ function renderMkts(events){
 function openMktModal(idx){ var ev=_evData[idx]; if(!ev)return; ge('mktT').textContent=ev.title||'Market'; ge('mktB').innerHTML='<div class="ld on"><div class="spin"></div></div>'; ge('mktOv').classList.add('on'); buildMktModal(ev,null); }
 
 /* ═════ MARKET MODAL ═════ */
+function parseIdsAny(m){
+  var ids=parseIds(m||{});
+  if(ids.length>=2)return ids;
+  try{
+    var arr=JSON.parse((m&&m.clobTokenIds)||'[]');
+    if(Array.isArray(arr)&&arr.length>=2)return arr;
+  }catch(e){}
+  return ids;
+}
+function obFetch(id){
+  if(!id)return Promise.resolve(null);
+  if(_obCache[id])return Promise.resolve(_obCache[id]);
+  return fj(CLOB+'/book?token_id='+id).then(function(ob){ _obCache[id]=ob; return ob; }).catch(function(){ return null; });
+}
+function selectEventMarket(i){
+  var ev=_currentEventForModal; if(!ev)return;
+  var m=(ev.markets||[])[i]; if(!m)return;
+  var ids=parseIdsAny(m), el=ge('obC');
+  if(!el)return;
+  if(ids.length<2){ el.innerHTML='<div class="empty">YES/NO token IDs missing for this market</div>'; return; }
+  el.innerHTML='<div class="ld on" style="padding:10px 0"><div class="spin"></div></div>';
+  Promise.all([obFetch(ids[0]),obFetch(ids[1])]).then(function(obs){ el.innerHTML=buildOb(obs[0],obs[1]); });
+}
 function buildMktModal(ev,actData){
   var title=(ev&&(ev.title||ev.question))||(actData&&actData.title)||'Market';
   ge('mktT').textContent=title;
   var markets=ev?(ev.markets||[]):[];
+  _currentEventForModal=ev||null;
   var isM=markets.length>1; var m0=markets[0]||{};
   var vol=parseFloat(ev?(ev.volume||m0.volume||0):0);
   var liq=parseFloat(ev?(ev.liquidity||m0.liquidity||0):0);
@@ -896,13 +923,13 @@ function buildMktModal(ev,actData){
   }
   if(isM){
     html+='<div class="msec"><div class="msect">Outcomes ('+markets.length+')</div>'+
-      markets.map(function(m){ var mp=parseFloat(m.lastTradePrice||0); var mpw=(mp*100).toFixed(1);
-        return '<div class="outrow"><div class="outlbl">'+esc(trunc(m.groupItemTitle||m.question||'?',36))+'</div>'+
+      markets.map(function(m,i){ var mp=parseFloat(m.lastTradePrice||0); var mpw=(mp*100).toFixed(1);
+        return '<div class="outrow" onclick="selectEventMarket('+i+')" style="cursor:pointer"><div class="outlbl">'+esc(trunc(m.groupItemTitle||m.question||'?',36))+'</div>'+
           '<div class="outpct">'+(mp*100).toFixed(0)+'%</div>'+
           '<div class="outbar"><div class="outfill" style="width:'+mpw+'%;background:'+(mp>=.5?'var(--green)':'var(--blue)')+'"></div></div>'+
-          (m.volume?'<span style="font-size:10px;color:var(--muted);min-width:36px;text-align:right">'+fm(m.volume)+'</span>':'')+
+          (m.volume?'<span style="font-size:10px;color:var(--muted);min-width:36px;text-align:right">'+fm(m.volume)+'</span>':'')+'<span class="badge bg">Open book</span>'+
         '</div>';
-      }).join('')+'</div>';
+      }).join('')+'</div><div class="msec"><div class="msect">Selected Market Orderbook</div><div id="obC"><div class="empty">Select a market above</div></div></div>';
   } else if(price>0){
     var pw2=(price*100).toFixed(1); var pc2=price>=.5?'var(--green)':'var(--red)';
     html+='<div class="msec"><div class="msect">Probability</div>'+
@@ -911,7 +938,7 @@ function buildMktModal(ev,actData){
         '<div style="flex:1"><div class="mbar"><div class="mfill" style="width:'+pw2+'%;background:'+pc2+'"></div></div>'+
         '<div style="font-size:11px;color:var(--muted)">Yes probability</div></div></div></div>';
   }
-  var ids=parseIds(m0);
+  var ids=parseIdsAny(m0);
   if(ids.length>=2){
     html+='<div class="msec"><div class="msect">Orderbook — YES / NO</div><div id="obC"><div class="ld on" style="padding:10px 0"><div class="spin"></div></div></div></div>';
     ge('mktB').innerHTML=html;
@@ -919,6 +946,7 @@ function buildMktModal(ev,actData){
     return;
   }
   ge('mktB').innerHTML=html||'<div class="empty">No data available</div>';
+  if(isM&&markets.length) setTimeout(function(){ selectEventMarket(0); },0);
 }
 function buildOb(yOb,nOb){
   function side(ob,lbl,isY){
@@ -1181,7 +1209,7 @@ document.addEventListener('DOMContentLoaded',function(){
   /* Markets */
   ge('mRefresh').addEventListener('click',function(){
     var active=document.querySelector('#mPills .pill.on');
-    loadMkts(active?active.dataset.f:'volume_24hr');
+    loadMkts(active?active.dataset.f:'volume_24hr',true);
   });
   document.querySelectorAll('#mPills .pill').forEach(function(p){
     p.addEventListener('click',function(){
@@ -1224,6 +1252,7 @@ document.addEventListener('DOMContentLoaded',function(){
 
   /* AUTO-LOAD on startup */
   loadMkts('volume_24hr');
+  goPage('markets');
   /* Background load for search */
   fetchEvents(function(list){ if(list.length)renderSearch(ge('gsIn').value.trim()); });
 });
